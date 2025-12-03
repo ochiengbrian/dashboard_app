@@ -1,0 +1,9 @@
+your-dashboard-project/
+  server/       (or backend/)
+    server.js
+    package.json
+    .env
+  client/       (React app)
+    package.json
+    src/
+  node_modules/ (maybe, but we will ignore this in git)
