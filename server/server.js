@@ -20,24 +20,38 @@ app.use(express.json());     // Allow JSON request bodies
 
 
 // ----------------------------
-//  MYSQL CONNECTION
+//  MYSQL CONNECTION (POOL + RETRY)
 // ----------------------------
-const db = mysql.createConnection({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,       // should be "db" inside Docker
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
 });
 
-// Connect to MySQL
-db.connect((err) => {
-    if (err) {
-        console.error('Error connecting to MySQL:', err);
-        return;
+// Simple retry loop to wait for MySQL to be ready (helps on first startup)
+async function waitForDB(retries = 30, delayMs = 2000) {
+  for (let i = 1; i <= retries; i++) {
+    try {
+      await pool.promise().query("SELECT 1");
+      console.log("Connected to MySQL database");
+      return;
+    } catch (err) {
+      console.log(`MySQL not ready yet (attempt ${i}/${retries}). Waiting...`);
+      if (i === retries) {
+        console.error("MySQL never became ready. Last error:", err.message);
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, delayMs));
     }
-    console.log('Connected to MySQL database');
-});
+  }
+}
+
 
 
 // ----------------------------
@@ -62,7 +76,7 @@ app.get('/api/clients', (req, res) => {
     ORDER BY c.name ASC
   `;
 
-  db.query(sql, (err, results) => {
+  pool.query(sql, (err, results) => {
     if (err) {
       console.error("Error fetching clients:", err);
       return res.status(500).json({ message: "Error fetching clients" });
@@ -87,7 +101,7 @@ app.put('/api/clients/:id', (req, res) => {
     WHERE id = ?
   `;
 
-  db.query(sql, [name, email, region, status, id], (err) => {
+  pool.query(sql, [name, email, region, status, id], (err) => {
     if (err) {
       console.error("Error updating client:", err);
       return res.status(500).json({ message: "Update failed" });
@@ -105,7 +119,7 @@ app.delete('/api/clients/:id', (req, res) => {
 
   const sql = "DELETE FROM clients WHERE id = ?";
 
-  db.query(sql, [id], (err) => {
+  pool.query(sql, [id], (err) => {
     if (err) {
       console.error("Error deleting client:", err);
       return res.status(500).json({ message: "Error deleting client" });
@@ -126,7 +140,7 @@ app.post('/api/clients', (req, res) => {
 
     const sql = `INSERT INTO clients (name, email, status, region) VALUES (?, ?, ?, ?)`;
 
-    db.query(sql, [name, email, status, region], (err, result) => {
+    pool.query(sql, [name, email, status, region], (err, result) => {
         if (err) {
             console.error('Error inserting client:', err);
             return res.status(500).json({ message: 'Database error' });
@@ -148,7 +162,7 @@ app.get('/api/clients/:id/payments', (req, res) => {
     ORDER BY created_at DESC
   `;
 
-  db.query(sql, [id], (err, results) => {
+  pool.query(sql, [id], (err, results) => {
     if (err) {
       console.error("Error fetching client payments:", err);
       return res.status(500).json({ message: "Error loading payments" });
@@ -170,7 +184,7 @@ app.get('/api/clients/:id/tasks', (req, res) => {
     ORDER BY due_date DESC
   `;
 
-  db.query(sql, [id], (err, results) => {
+  pool.query(sql, [id], (err, results) => {
     if (err) {
       console.error("Error fetching client tasks:", err);
       return res.status(500).json({ message: "Error loading tasks" });
@@ -192,7 +206,7 @@ app.get('/api/payments/summary', (req, res) => {
         FROM payments
     `;
 
-    db.query(sql, (err, results) => {
+    pool.query(sql, (err, results) => {
         if (err) {
             console.error('Error fetching payment summary:', err);
             return res.status(500).json({ message: 'Database error' });
@@ -215,7 +229,7 @@ app.get('/api/payments/monthly', (req, res) => {
     ORDER BY month ASC
   `;
 
-  db.query(sql, (err, results) => {
+  pool.query(sql, (err, results) => {
     if (err) {
       console.error("Error fetching monthly earnings:", err);
       return res.status(500).json({ message: "Database error" });
@@ -239,7 +253,7 @@ app.post('/api/payments', (req, res) => {
     VALUES (?, ?, ?, ?)
   `;
 
-  db.query(sql, [client_id, amount, status, date], (err, result) => {
+  pool.query(sql, [client_id, amount, status, date], (err, result) => {
     if (err) {
       console.error('Error inserting payment:', err);
       return res.status(500).json({ message: 'Server error' });
@@ -257,7 +271,7 @@ app.delete('/api/payments/:id', (req, res) => {
 
   const sql = "DELETE FROM payments WHERE id = ?";
 
-  db.query(sql, [id], (err) => {
+  pool.query(sql, [id], (err) => {
     if (err) {
       console.error("Error deleting payment:", err);
       return res.status(500).json({ message: "Error deleting payment" });
@@ -283,7 +297,7 @@ app.post('/api/tasks', (req, res) => {
     VALUES (?, ?, ?, ?, ?)
   `;
 
-  db.query(sql, [client_id, subject, description, priority, due_date], (err, result) => {
+  pool.query(sql, [client_id, subject, description, priority, due_date], (err, result) => {
     if (err) {
       console.error('Error inserting task:', err);
       return res.status(500).json({ message: 'Server error' });
@@ -303,7 +317,7 @@ app.get('/api/tasks/today', (req, res) => {
     WHERE t.due_date = CURDATE()
   `;
 
-  db.query(sql, (err, results) => {
+  pool.query(sql, (err, results) => {
     if (err) {
       console.error('Error fetching tasks:', err);
       return res.status(500).json({ message: 'Server error' });
@@ -329,7 +343,7 @@ app.get('/api/tasks/by-date', (req, res) => {
     WHERE t.due_date = ?
   `;
 
-  db.query(sql, [date], (err, results) => {
+  pool.query(sql, [date], (err, results) => {
     if (err) {
       console.error('Error fetching tasks by date:', err);
       return res.status(500).json({ message: 'Server error' });
@@ -352,7 +366,7 @@ app.get('/api/clients/search', (req, res) => {
     LIMIT 20
   `;
 
-  db.query(sql, [`%${search}%`], (err, results) => {
+  pool.query(sql, [`%${search}%`], (err, results) => {
     if (err) {
       console.error('Search error:', err);
       return res.status(500).json({ message: 'Server error' });
@@ -367,6 +381,13 @@ app.get('/api/clients/search', (req, res) => {
 // ----------------------------
 //  START SERVER
 // ----------------------------
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-});
+waitForDB()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`Server running on port ${port}`);
+    });
+  })
+  .catch(() => {
+    process.exit(1);
+  });
+

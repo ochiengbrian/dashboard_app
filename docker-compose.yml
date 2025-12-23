@@ -1,0 +1,47 @@
+services:
+  dashboard_db:
+    image: mysql:8.0
+    container_name: dashboard_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: dashboard_db
+      MYSQL_USER: dashboarduser
+      MYSQL_PASSWORD: dashboardpass
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./db-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -prootpassword --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  server:
+    build: ./server
+    container_name: dashboard_server
+    restart: unless-stopped
+    depends_on:
+      dashboard_db:
+        condition: service_healthy
+    environment:
+      PORT: 5000
+      DB_HOST: dashboard_db
+      DB_PORT: 3306
+      DB_USER: dashboarduser
+      DB_PASSWORD: dashboardpass
+      DB_NAME: dashboard_db
+    ports:
+      - "5000:5000"
+
+  client:
+    build: ./client
+    container_name: dashboard_client
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+
+volumes:
+  db_data:
