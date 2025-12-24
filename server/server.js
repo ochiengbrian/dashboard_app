@@ -2,11 +2,18 @@
 //  IMPORTS
 // ----------------------------
 const express = require('express');
-const mysql = require('mysql2');
+const { Pool } = require('mysql2');
 const cors = require('cors');
 const dotenv = require('dotenv');
 
 dotenv.config(); // Load .env variables
+console.log("ENV CHECK:", {
+  DB_HOST: process.env.DB_HOST,
+  DB_PORT: process.env.DB_PORT,
+  DB_USER: process.env.DB_USER,
+  DB_NAME: process.env.DB_NAME,
+  HAS_PASSWORD: !!process.env.DB_PASSWORD
+});
 
 
 // ----------------------------
@@ -20,37 +27,34 @@ app.use(express.json());     // Allow JSON request bodies
 
 
 // ----------------------------
-//  MYSQL CONNECTION (POOL + RETRY)
+//  Postgre CONNECTION (POOL + RETRY)
 // ----------------------------
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,       // should be "db" inside Docker
-  port: Number(process.env.DB_PORT || 3306),
+const pool = new Pool({
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+  ssl: { require: true, rejectUnauthorized: false }
 });
 
-// Simple retry loop to wait for MySQL to be ready (helps on first startup)
-async function waitForDB(retries = 30, delayMs = 2000) {
+
+
+// Simple retry loop to wait for Postgre to be ready (helps on first startup)
+async function waitForDB(retries = 10, delayMs = 2000) {
   for (let i = 1; i <= retries; i++) {
     try {
-      await pool.promise().query("SELECT 1");
-      console.log("Connected to MySQL database");
+      await pool.query("SELECT 1");
+      console.log("Connected to Postgres database");
       return;
     } catch (err) {
-      console.log(`MySQL not ready yet (attempt ${i}/${retries}). Waiting...`);
-      if (i === retries) {
-        console.error("MySQL never became ready. Last error:", err.message);
-        throw err;
-      }
-      await new Promise((r) => setTimeout(r, delayMs));
+      console.log(`Postgres not ready (attempt ${i}/${retries})`);
+      if (i === retries) throw err;
+      await new Promise(r => setTimeout(r, delayMs));
     }
   }
 }
+
 
 
 

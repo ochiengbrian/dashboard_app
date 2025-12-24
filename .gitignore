@@ -3,6 +3,7 @@ your-dashboard-project/
     server.js
     package.json
     .env
+    *.env
   client/       (React app)
     package.json
     src/
