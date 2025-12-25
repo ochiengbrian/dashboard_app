@@ -2,9 +2,11 @@
 //  IMPORTS
 // ----------------------------
 const express = require('express');
-const { Pool } = require('mysql2');
+const mysql = require('mysql2/promise');
 const cors = require('cors');
 const dotenv = require('dotenv');
+
+
 
 dotenv.config(); // Load .env variables
 console.log("ENV CHECK:", {
@@ -27,33 +29,42 @@ app.use(express.json());     // Allow JSON request bodies
 
 
 // ----------------------------
-//  Postgre CONNECTION (POOL + RETRY)
+//  MySQL CONNECTION (POOL + RETRY)
 // ----------------------------
-const pool = new Pool({
+const pool = mysql.createPool({
   host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT),
+  port: Number(process.env.DB_PORT || 3306),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  ssl: { require: true, rejectUnauthorized: false }
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
 });
 
 
 
-// Simple retry loop to wait for Postgre to be ready (helps on first startup)
-async function waitForDB(retries = 10, delayMs = 2000) {
+
+
+
+// // Simple retry loop to wait for MySQL to be ready
+async function waitForDB(retries = 30, delayMs = 2000) {
   for (let i = 1; i <= retries; i++) {
     try {
       await pool.query("SELECT 1");
-      console.log("Connected to Postgres database");
+      console.log("Connected to MySQL database");
       return;
     } catch (err) {
-      console.log(`Postgres not ready (attempt ${i}/${retries})`);
-      if (i === retries) throw err;
-      await new Promise(r => setTimeout(r, delayMs));
+      console.log(`MySQL not ready yet (attempt ${i}/${retries}). Waiting...`);
+      if (i === retries) {
+        console.error("MySQL never became ready. Last error:", err.message);
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, delayMs));
     }
   }
 }
+
 
 
 
@@ -69,8 +80,7 @@ app.get('/', (req, res) => {
 
 // Fetch clients route
 // Get clients with summary counts
-app.get('/api/clients', (req, res) => {
-
+app.get('/api/clients', async (req, res) => {
   const sql = `
     SELECT 
       c.*,
@@ -80,18 +90,18 @@ app.get('/api/clients', (req, res) => {
     ORDER BY c.name ASC
   `;
 
-  pool.query(sql, (err, results) => {
-    if (err) {
-      console.error("Error fetching clients:", err);
-      return res.status(500).json({ message: "Error fetching clients" });
-    }
-
+  try {
+    const [results] = await pool.query(sql);
     res.json(results);
-  });
+  } catch (err) {
+    console.error("Error fetching clients:", err);
+    res.status(500).json({ message: "Error fetching clients" });
+  }
 });
 
+
 // Update a client
-app.put('/api/clients/:id', (req, res) => {
+app.put('/api/clients/:id', async (req, res) => {
   const { id } = req.params;
   const { name, email, region, status } = req.body;
 
@@ -105,58 +115,58 @@ app.put('/api/clients/:id', (req, res) => {
     WHERE id = ?
   `;
 
-  pool.query(sql, [name, email, region, status, id], (err) => {
-    if (err) {
-      console.error("Error updating client:", err);
-      return res.status(500).json({ message: "Update failed" });
-    }
-
+  try {
+    await pool.query(sql, [name, email, region, status, id]);
     res.json({ message: "Client updated successfully" });
-  });
+  } catch (err) {
+    console.error("Error updating client:", err);
+    res.status(500).json({ message: "Update failed" });
+  }
 });
+
+
 
 
 
 // Delete a client
-app.delete('/api/clients/:id', (req, res) => {
+app.delete('/api/clients/:id', async (req, res) => {
   const { id } = req.params;
-
   const sql = "DELETE FROM clients WHERE id = ?";
 
-  pool.query(sql, [id], (err) => {
-    if (err) {
-      console.error("Error deleting client:", err);
-      return res.status(500).json({ message: "Error deleting client" });
-    }
-
+  try {
+    await pool.query(sql, [id]);
     res.json({ message: "Client deleted successfully" });
-  });
+  } catch (err) {
+    console.error("Error deleting client:", err);
+    res.status(500).json({ message: "Error deleting client" });
+  }
 });
+
 
 
 // POST Client to DB
-app.post('/api/clients', (req, res) => {
-    const { name, email, status, region } = req.body;
+app.post('/api/clients', async (req, res) => {
+  const { name, email, status, region } = req.body;
 
-    if (!name || !email || !status || !region) {
-        return res.status(400).json({ message: 'All fields are required' });
-    }
+  if (!name || !email || !status || !region) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
 
-    const sql = `INSERT INTO clients (name, email, status, region) VALUES (?, ?, ?, ?)`;
+  const sql = `INSERT INTO clients (name, email, status, region) VALUES (?, ?, ?, ?)`;
 
-    pool.query(sql, [name, email, status, region], (err, result) => {
-        if (err) {
-            console.error('Error inserting client:', err);
-            return res.status(500).json({ message: 'Database error' });
-        }
-
-        res.json({ message: 'Client added successfully', clientId: result.insertId });
-    });
+  try {
+    const [result] = await pool.query(sql, [name, email, status, region]);
+    res.json({ message: 'Client added successfully', clientId: result.insertId });
+  } catch (err) {
+    console.error('Error inserting client:', err);
+    res.status(500).json({ message: 'Database error' });
+  }
 });
+
 
 //Get payments for a client
 // Get all payments for a specific client
-app.get('/api/clients/:id/payments', (req, res) => {
+app.get('/api/clients/:id/payments', async (req, res) => {
   const { id } = req.params;
 
   const sql = `
@@ -166,19 +176,19 @@ app.get('/api/clients/:id/payments', (req, res) => {
     ORDER BY created_at DESC
   `;
 
-  pool.query(sql, [id], (err, results) => {
-    if (err) {
-      console.error("Error fetching client payments:", err);
-      return res.status(500).json({ message: "Error loading payments" });
-    }
-
+  try {
+    const [results] = await pool.query(sql, [id]);
     res.json(results);
-  });
+  } catch (err) {
+    console.error("Error fetching client payments:", err);
+    res.status(500).json({ message: "Error loading payments" });
+  }
 });
 
 
+
 // Get all tasks for a specific client
-app.get('/api/clients/:id/tasks', (req, res) => {
+app.get('/api/clients/:id/tasks', async (req, res) => {
   const { id } = req.params;
 
   const sql = `
@@ -188,41 +198,41 @@ app.get('/api/clients/:id/tasks', (req, res) => {
     ORDER BY due_date DESC
   `;
 
-  pool.query(sql, [id], (err, results) => {
-    if (err) {
-      console.error("Error fetching client tasks:", err);
-      return res.status(500).json({ message: "Error loading tasks" });
-    }
-
+  try {
+    const [results] = await pool.query(sql, [id]);
     res.json(results);
-  });
+  } catch (err) {
+    console.error("Error fetching client tasks:", err);
+    res.status(500).json({ message: "Error loading tasks" });
+  }
 });
+
 
 
 
 // Fetch payment summary for dashboard
-app.get('/api/payments/summary', (req, res) => {
-    const sql = `
-        SELECT
-            SUM(CASE WHEN status = 'Approved' THEN amount ELSE 0 END) AS approved,
-            SUM(CASE WHEN status = 'Pending' THEN amount ELSE 0 END) AS pending,
-            SUM(amount) AS total
-        FROM payments
-    `;
+app.get('/api/payments/summary', async (req, res) => {
+  const sql = `
+    SELECT
+      SUM(CASE WHEN status = 'Approved' THEN amount ELSE 0 END) AS approved,
+      SUM(CASE WHEN status = 'Pending' THEN amount ELSE 0 END) AS pending,
+      SUM(amount) AS total
+    FROM payments
+  `;
 
-    pool.query(sql, (err, results) => {
-        if (err) {
-            console.error('Error fetching payment summary:', err);
-            return res.status(500).json({ message: 'Database error' });
-        }
-
-        res.json(results[0]);
-    });
+  try {
+    const [results] = await pool.query(sql);
+    res.json(results[0]);
+  } catch (err) {
+    console.error('Error fetching payment summary:', err);
+    res.status(500).json({ message: 'Database error' });
+  }
 });
 
 
+
 // Monthly earnings (last 12 months)
-app.get('/api/payments/monthly', (req, res) => {
+app.get('/api/payments/monthly', async (req, res) => {
   const sql = `
     SELECT 
       DATE_FORMAT(created_at, '%Y-%m') AS month,
@@ -233,19 +243,20 @@ app.get('/api/payments/monthly', (req, res) => {
     ORDER BY month ASC
   `;
 
-  pool.query(sql, (err, results) => {
-    if (err) {
-      console.error("Error fetching monthly earnings:", err);
-      return res.status(500).json({ message: "Database error" });
-    }
+  try {
+    const [results] = await pool.query(sql);
     res.json(results);
-  });
+  } catch (err) {
+    console.error("Error fetching monthly earnings:", err);
+    res.status(500).json({ message: "Database error" });
+  }
 });
 
 
 
+
 //Add Payment
-app.post('/api/payments', (req, res) => {
+app.post('/api/payments', async (req, res) => {
   const { client_id, amount, status, date } = req.body;
 
   if (!client_id || !amount || !status || !date) {
@@ -257,39 +268,38 @@ app.post('/api/payments', (req, res) => {
     VALUES (?, ?, ?, ?)
   `;
 
-  pool.query(sql, [client_id, amount, status, date], (err, result) => {
-    if (err) {
-      console.error('Error inserting payment:', err);
-      return res.status(500).json({ message: 'Server error' });
-    }
-
+  try {
+    const [result] = await pool.query(sql, [client_id, amount, status, date]);
     res.json({ message: 'Payment added successfully', id: result.insertId });
-  });
+  } catch (err) {
+    console.error('Error inserting payment:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
 });
+
 
 
 
 // Delete a payment
-app.delete('/api/payments/:id', (req, res) => {
+app.delete('/api/payments/:id', async (req, res) => {
   const { id } = req.params;
-
   const sql = "DELETE FROM payments WHERE id = ?";
 
-  pool.query(sql, [id], (err) => {
-    if (err) {
-      console.error("Error deleting payment:", err);
-      return res.status(500).json({ message: "Error deleting payment" });
-    }
-
+  try {
+    await pool.query(sql, [id]);
     res.json({ message: "Payment deleted successfully" });
-  });
+  } catch (err) {
+    console.error("Error deleting payment:", err);
+    res.status(500).json({ message: "Error deleting payment" });
+  }
 });
+
 
 
 
 
 // Create a New Task
-app.post('/api/tasks', (req, res) => {
+app.post('/api/tasks', async (req, res) => {
   const { client_id, subject, description, priority, due_date } = req.body;
 
   if (!client_id || !subject || !priority || !due_date) {
@@ -301,19 +311,19 @@ app.post('/api/tasks', (req, res) => {
     VALUES (?, ?, ?, ?, ?)
   `;
 
-  pool.query(sql, [client_id, subject, description, priority, due_date], (err, result) => {
-    if (err) {
-      console.error('Error inserting task:', err);
-      return res.status(500).json({ message: 'Server error' });
-    }
-
+  try {
+    const [result] = await pool.query(sql, [client_id, subject, description, priority, due_date]);
     res.json({ message: 'Task added', taskId: result.insertId });
-  });
+  } catch (err) {
+    console.error('Error inserting task:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
 });
 
 
+
 // Fetch Today's Tasks
-app.get('/api/tasks/today', (req, res) => {
+app.get('/api/tasks/today', async (req, res) => {
   const sql = `
     SELECT t.*, c.name AS client_name
     FROM tasks t
@@ -321,19 +331,19 @@ app.get('/api/tasks/today', (req, res) => {
     WHERE t.due_date = CURDATE()
   `;
 
-  pool.query(sql, (err, results) => {
-    if (err) {
-      console.error('Error fetching tasks:', err);
-      return res.status(500).json({ message: 'Server error' });
-    }
-
+  try {
+    const [results] = await pool.query(sql);
     res.json(results);
-  });
+  } catch (err) {
+    console.error('Error fetching tasks:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
 });
 
 
+
 //Fetch Tasks by date
-app.get('/api/tasks/by-date', (req, res) => {
+app.get('/api/tasks/by-date', async (req, res) => {
   const { date } = req.query;
 
   if (!date) {
@@ -347,20 +357,20 @@ app.get('/api/tasks/by-date', (req, res) => {
     WHERE t.due_date = ?
   `;
 
-  pool.query(sql, [date], (err, results) => {
-    if (err) {
-      console.error('Error fetching tasks by date:', err);
-      return res.status(500).json({ message: 'Server error' });
-    }
-
+  try {
+    const [results] = await pool.query(sql, [date]);
     res.json(results);
-  });
+  } catch (err) {
+    console.error('Error fetching tasks by date:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
 });
 
 
 
+
 // Client Search
-app.get('/api/clients/search', (req, res) => {
+app.get('/api/clients/search', async (req, res) => {
   const search = req.query.q;
 
   const sql = `
@@ -370,15 +380,15 @@ app.get('/api/clients/search', (req, res) => {
     LIMIT 20
   `;
 
-  pool.query(sql, [`%${search}%`], (err, results) => {
-    if (err) {
-      console.error('Search error:', err);
-      return res.status(500).json({ message: 'Server error' });
-    }
-
+  try {
+    const [results] = await pool.query(sql, [`%${search}%`]);
     res.json(results);
-  });
+  } catch (err) {
+    console.error('Search error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
 });
+
 
 
 
@@ -387,9 +397,9 @@ app.get('/api/clients/search', (req, res) => {
 // ----------------------------
 waitForDB()
   .then(() => {
-    app.listen(port, () => {
-      console.log(`Server running on port ${port}`);
-    });
+    app.listen(port, "0.0.0.0", () => {
+  console.log(`Server running on port ${port}`);
+});
   })
   .catch(() => {
     process.exit(1);
